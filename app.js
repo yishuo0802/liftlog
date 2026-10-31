@@ -62,14 +62,24 @@ const ICON = {
   minus: '<path d="M6 12h12"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   updown: '<path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4"/>',
+  diet: '<path d="M3.5 11.5h17a8.5 8.5 0 0 1-17 0z"/><path d="M8.5 8c0-1.2 1.2-1.6 1.2-3M12.5 8c0-1.2 1.2-1.6 1.2-3"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>',
   copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6.5a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5h2"/>',
   dumbbell: '<path d="M7 12h10"/><rect x="4" y="8" width="3" height="8" rx="1"/><rect x="17" y="8" width="3" height="8" rx="1"/><path d="M2.5 10.5v3M21.5 10.5v3"/>',
 };
 const icon = (name, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
+// 常吃食物的起始清單（數字是概略值，使用者可以刪改）
+const DEFAULT_FOODS = [
+  ['雞胸肉（100g）', 165, 31], ['乳清蛋白（1 匙）', 120, 24], ['雞蛋（1 顆）', 75, 7],
+  ['無糖豆漿（400ml）', 140, 14], ['希臘優格（100g）', 100, 10], ['白飯（1 碗）', 280, 5],
+];
+const defaultFoods = () => DEFAULT_FOODS.map(([name, kcal, protein]) => ({ id: uid(), name, kcal, protein }));
+const DEFAULT_GOALS = { proteinPerKg: 2, kcal: null };
+
 // ---------- storage ----------
 function freshDb() {
-  return { defaultsVersion: DEFAULTS_VERSION, exercises: defaultExercises(), workouts: [], body: [] };
+  return { defaultsVersion: DEFAULTS_VERSION, exercises: defaultExercises(), workouts: [], body: [], foods: defaultFoods(), meals: [], goals: { ...DEFAULT_GOALS } };
 }
 function normalize(d) {
   if (!d || typeof d !== 'object') throw new Error('格式不對');
@@ -83,9 +93,15 @@ function normalize(d) {
     }) : [],
     workouts: Array.isArray(d.workouts) ? d.workouts.filter(w => w && w.date && w.exercise) : [],
     body: Array.isArray(d.body) ? d.body.filter(b => b && b.date) : [],
+    // 舊資料沒有飲食欄位：給起始的常吃清單
+    foods: Array.isArray(d.foods) ? d.foods.filter(f => f && f.name) : defaultFoods(),
+    meals: Array.isArray(d.meals) ? d.meals.filter(m => m && m.date) : [],
+    goals: { ...DEFAULT_GOALS, ...(d.goals && typeof d.goals === 'object' ? d.goals : {}) },
   };
   out.workouts.forEach(w => { w.id ||= uid(); w.ts ||= 0; w.weight = +w.weight || 0; w.sets = +w.sets || 1; w.reps = +w.reps || 1; w.note ||= ''; });
   out.body.forEach(b => { b.id ||= uid(); b.ts ||= 0; b.note ||= ''; });
+  out.foods.forEach(f => { f.id ||= uid(); f.name = String(f.name); f.kcal = +f.kcal || 0; f.protein = +f.protein || 0; });
+  out.meals.forEach(m => { m.id ||= uid(); m.ts ||= 0; m.name = String(m.name || ''); m.kcal = +m.kcal || 0; m.protein = +m.protein || 0; m.qty = +m.qty || 1; });
   return migrate(out);
 }
 // 舊版只有 8 個動作：補上新的動作庫，舊動作和紀錄都保留
@@ -123,7 +139,11 @@ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().
 // ---------- state ----------
 const state = {
   tab: 'log',
-  editing: { history: false, body: false, exercises: false },
+  editing: { history: false, body: false, exercises: false, diet: false, foods: false },
+  dietDate: todayStr(),
+  dietQty: 1,
+  dietForm: { name: '', kcal: '', protein: '', fav: false },
+  newFood: { name: '', kcal: '', protein: '' },
   chartMode: 'train',
   chartExercise: null,
   aiWeeks: 12, // 0 = 全部
@@ -142,7 +162,24 @@ const exercisesIn = cat => {
 };
 const allCategories = () => sortCategories([...new Set([...CATEGORIES.filter(c => db.exercises.some(e => e.categories.includes(c))), ...db.exercises.flatMap(e => e.categories)])]);
 
-/// 換部位時：先選這個部位最近練過的動作，沒有就選第一個
+// ---------- 飲食 ----------
+const QTYS = [0.5, 1, 1.5, 2];
+function dayTotals(date) {
+  return db.meals.filter(m => m.date === date)
+    .reduce((t, m) => ({ kcal: t.kcal + m.kcal, protein: t.protein + m.protein }), { kcal: 0, protein: 0 });
+}
+const latestWeight = () => db.body.filter(b => b.weight != null).sort(byNewest)[0]?.weight ?? null;
+// 蛋白質目標 = 最新體重 × 每公斤克數；熱量目標使用者自己填
+function goals() {
+  const w = latestWeight();
+  const perKg = parseNum(db.goals.proteinPerKg);
+  return {
+    protein: w && perKg ? Math.round(w * perKg) : null,
+    kcal: parseNum(db.goals.kcal),
+  };
+}
+
+// 換部位時：先選這個部位最近練過的動作，沒有就選第一個
 function pickCategory(cat) {
   state.form.category = cat;
   const names = exercisesIn(cat);
@@ -222,7 +259,7 @@ const views = {
   log() {
     const f = state.form;
     const today = db.workouts.filter(w => w.date === todayStr()).sort(byNewest);
-    return `${title('記錄訓練')}
+    return `${title('記錄訓練', '<button class="linkbtn" data-act="tab" data-k="history">歷史</button>')}
       <section class="group">
         <label class="row"><span class="k">部位</span>${plainSelect('category', allCategories(), f.category, '部位')}</label>
         <label class="row"><span class="k">動作</span>${plainSelect('exercise', exercisesIn(f.category), f.exercise, '動作')}</label>
@@ -244,17 +281,79 @@ const views = {
 
   history() {
     const editing = state.editing.history;
+    const back = `<button class="backbtn" data-act="tab" data-k="log">${icon('back')}訓練</button>`;
     const right = db.workouts.length ? `<button class="linkbtn" data-act="toggleEdit" data-k="history">${editing ? '完成' : '編輯'}</button>` : '';
     if (!db.workouts.length) {
-      return title('歷史') + empty('dumbbell', '還沒有訓練紀錄', '到「記錄」分頁存下第一組，這裡會按日期排好。');
+      return back + title('歷史') + empty('dumbbell', '還沒有訓練紀錄', '存下第一組訓練之後，這裡會按日期排好。');
     }
     const days = {};
     for (const w of [...db.workouts].sort(byNewest)) (days[w.date] ||= []).push(w);
-    return title('歷史', right) + Object.entries(days).map(([d, items]) => {
+    return back + title('歷史', right) + Object.entries(days).map(([d, items]) => {
       const vol = items.reduce((s, w) => s + volume(w), 0);
       return `<div class="group-h"><span>${fmtDay(d)}</span><span>訓練量 ${fmtNum(vol)}</span></div>
         <section class="group">${items.map(w => workoutRow(w, editing)).join('')}</section>`;
     }).join('');
+  },
+
+  diet() {
+    const d = state.dietDate;
+    const meals = db.meals.filter(m => m.date === d).sort((a, b) => b.ts - a.ts);
+    const t = dayTotals(d);
+    const g = goals();
+    const f = state.dietForm;
+    const editing = state.editing.diet;
+    const canAdd = parseNum(f.kcal) !== null || parseNum(f.protein) !== null;
+    const meter = (label, value, goal, unit, hint) => {
+      const pct = goal ? Math.min(100, (value / goal) * 100) : 0;
+      const left = goal ? goal - value : null;
+      return `<div class="row meter">
+        <div class="meter-top"><span class="k">${label}</span>
+          <span class="meta"><b>${fmtNum(value)}</b>${goal ? ` / ${fmtNum(goal)}` : ''} ${unit}</span></div>
+        ${goal ? `<div class="bar" role="progressbar" aria-label="${label}" aria-valuenow="${Math.round(value)}" aria-valuemax="${Math.round(goal)}"><span style="width:${pct}%"></span></div>
+          <div class="sub">${left > 0 ? `還差 ${fmtNum(left)} ${unit}` : `已達標${left < 0 ? `，多 ${fmtNum(-left)} ${unit}` : ''}`}</div>`
+          : `<div class="sub">${hint}</div>`}
+      </div>`;
+    };
+    return `${title('飲食')}
+      <section class="group">
+        <label class="row"><span class="k">日期</span><input type="date" data-field="d.date" value="${d}" max="${todayStr()}"></label>
+      </section>
+      <section class="group">
+        ${meter('蛋白質', t.protein, g.protein, 'g', '到「身體」填體重，就會自動算出蛋白質目標')}
+        ${meter('熱量', t.kcal, g.kcal, 'kcal', '到「設定」填每日熱量目標')}
+      </section>
+
+      <div class="group-h"><span>常吃的食物 · 點一下加入</span></div>
+      <section class="group">
+        <div class="row"><span class="k">份量</span>
+          <span class="seg mini" role="tablist" aria-label="份量">${QTYS.map(q =>
+            `<button role="tab" aria-selected="${state.dietQty === q}" data-act="dietQty" data-d="${q}">×${q}</button>`).join('')}</span>
+        </div>
+        ${db.foods.length ? db.foods.map(food => `<button class="row entry food" data-act="addFood" data-id="${food.id}">
+          <span class="main name">${esc(food.name)}</span>
+          <span class="meta">${fmtNum(food.kcal * state.dietQty)} kcal · ${fmtNum(food.protein * state.dietQty)} g</span>
+          ${icon('plus')}
+        </button>`).join('') : '<div class="row"><span class="sub">還沒有常吃的食物，用下面的手動輸入加一個，並勾選「存成常吃的食物」。</span></div>'}
+      </section>
+
+      <div class="group-h"><span>手動輸入</span></div>
+      <section class="group">
+        <div class="row"><input class="full" data-field="d.name" placeholder="名稱，例如：雞腿便當" value="${esc(f.name)}" aria-label="食物名稱"></div>
+        <div class="row"><label class="k" for="d-kcal">熱量</label>
+          <span class="ctl"><input id="d-kcal" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="d.kcal" value="${esc(f.kcal)}"><span class="unit">kcal</span></span></div>
+        <div class="row"><label class="k" for="d-protein">蛋白質</label>
+          <span class="ctl"><input id="d-protein" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="d.protein" value="${esc(f.protein)}"><span class="unit">g</span></span></div>
+        <div class="row"><span class="k">存成常吃的食物</span>
+          <button class="chip" aria-pressed="${f.fav}" data-act="toggleFav">${f.fav ? '會存' : '不存'}</button></div>
+      </section>
+      <button class="primary" data-act="addMeal"${canAdd ? '' : ' disabled'}>加入${d === todayStr() ? '今天' : fmtShort(d)}的飲食</button>
+
+      ${meals.length ? `<div class="group-h"><span>${d === todayStr() ? '今天' : fmtDay(d)}吃了 · ${meals.length} 筆</span><button class="linkbtn" data-act="toggleEdit" data-k="diet">${editing ? '完成' : '編輯'}</button></div>
+        <section class="group">${meals.map(m => `<div class="row entry">
+          <div class="main"><div class="name">${esc(m.name || '未命名')}${m.qty !== 1 ? ` ×${m.qty}` : ''}</div></div>
+          <div class="meta">${fmtNum(m.kcal)} kcal · ${fmtNum(m.protein)} g</div>
+          ${editing ? `<button class="del" data-act="delMeal" data-id="${m.id}">刪除</button>` : ''}
+        </div>`).join('')}</section>` : ''}`;
   },
 
   body() {
@@ -284,8 +383,26 @@ const views = {
   charts() {
     const seg = `<div class="seg" role="tablist" aria-label="圖表類型">
       <button role="tab" aria-selected="${state.chartMode === 'train'}" data-act="chartMode" data-k="train">訓練</button>
+      <button role="tab" aria-selected="${state.chartMode === 'diet'}" data-act="chartMode" data-k="diet">飲食</button>
       <button role="tab" aria-selected="${state.chartMode === 'body'}" data-act="chartMode" data-k="body">身體</button>
     </div>`;
+    if (state.chartMode === 'diet') {
+      const days = dietDays(30);
+      if (!days.length) return title('圖表') + seg + empty('diet', '還沒有飲食紀錄', '到「飲食」分頁點常吃的食物，就會畫出每天的蛋白質和熱量。');
+      const g = goals();
+      const avg = k => Math.round(days.reduce((s, x) => s + x[k], 0) / days.length);
+      const hit = g.protein ? days.filter(x => x.protein >= g.protein).length : null;
+      return title('圖表') + seg + `
+        <p class="summary">有記錄的 ${days.length} 天平均 <b>${fmtNum(avg('protein'))} g</b> 蛋白質、<b>${fmtNum(avg('kcal'))} kcal</b>${hit !== null ? ` · 蛋白質達標 <b>${hit} 天</b>` : ''}</p>
+        <section class="group chart-card" style="margin-top:16px">
+          <div class="chart-h"><h2>每日蛋白質（g）</h2><small>${g.protein ? `目標 ${g.protein} g` : '有記錄的日子'}</small></div>
+          <div class="chart" data-chart="diet:protein"></div>
+        </section>
+        <section class="group chart-card">
+          <div class="chart-h"><h2>每日熱量（kcal）</h2><small>${g.kcal ? `目標 ${fmtNum(g.kcal)} kcal` : '有記錄的日子'}</small></div>
+          <div class="chart" data-chart="diet:kcal"></div>
+        </section>`;
+    }
     if (state.chartMode === 'body') {
       if (!db.body.length) return title('圖表') + seg + empty('body', '還沒有身體數據', '到「身體」分頁輸入體重或 InBody 的數字，就會畫出趨勢。');
       return title('圖表') + seg + BODY_METRICS.map(m => {
@@ -332,7 +449,35 @@ const views = {
     // 依主要部位分組
     const groups = {};
     for (const e of db.exercises) (groups[e.categories[0]] ||= []).push(e);
+    const w = latestWeight();
+    const g = goals();
+    const nf = state.newFood;
+    const foodOk = nf.name.trim() && (parseNum(nf.kcal) !== null || parseNum(nf.protein) !== null);
     return `${title('設定')}
+      <div class="group-h"><span>飲食目標</span></div>
+      <section class="group">
+        <div class="row"><label class="k" for="g-ppk">蛋白質</label>
+          <span class="ctl"><input id="g-ppk" class="num" inputmode="decimal" autocomplete="off" data-field="g.proteinPerKg" value="${esc(db.goals.proteinPerKg ?? '')}"><span class="unit">g / 每公斤體重</span></span></div>
+        <div class="row"><label class="k" for="g-kcal">熱量</label>
+          <span class="ctl"><input id="g-kcal" class="num" inputmode="numeric" autocomplete="off" placeholder="—" data-field="g.kcal" value="${esc(db.goals.kcal ?? '')}"><span class="unit">kcal / 天</span></span></div>
+      </section>
+      <p class="foot" id="goal-foot">${w ? `以最新體重 ${fmtNum(w)} kg 計算，每天蛋白質目標 ${g.protein ?? '—'} g。` : '到「身體」填體重後，會自動算出蛋白質目標。'}增肌常見 1.6–2.2 g/kg。</p>
+
+      <div class="group-h"><span>常吃的食物 · ${db.foods.length}</span><button class="linkbtn" data-act="toggleEdit" data-k="foods">${state.editing.foods ? '完成' : '編輯'}</button></div>
+      <section class="group">
+        ${db.foods.map(f => `<div class="row entry">
+          <div class="main">${esc(f.name)}</div><div class="meta">${fmtNum(f.kcal)} kcal · ${fmtNum(f.protein)} g</div>
+          ${state.editing.foods ? `<button class="del" data-act="delFood" data-id="${f.id}">刪除</button>` : ''}
+        </div>`).join('')}
+        <div class="row"><input class="full" data-field="f.name" placeholder="新增：名稱和份量，例如：茶葉蛋（1 顆）" value="${esc(nf.name)}" aria-label="食物名稱"></div>
+        <div class="row"><label class="k" for="f-kcal">熱量</label>
+          <span class="ctl"><input id="f-kcal" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="f.kcal" value="${esc(nf.kcal)}"><span class="unit">kcal</span></span></div>
+        <div class="row"><label class="k" for="f-protein">蛋白質</label>
+          <span class="ctl"><input id="f-protein" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="f.protein" value="${esc(nf.protein)}"><span class="unit">g</span></span></div>
+        <button class="row action" data-act="addFoodItem"${foodOk ? '' : ' disabled'}>${icon('plus')}新增常吃的食物</button>
+      </section>
+      <p class="foot">起始清單的數字是概略值，依你吃的品牌和份量修改會更準。營養標示上的「每份」數字可以直接填。</p>
+
       <div class="group-h"><span>新增動作</span></div>
       <section class="group">
         <div class="row"><input class="full" data-field="n.name" placeholder="動作名稱，例如：腿推（單腳）" value="${esc(state.newEx.name)}" aria-label="動作名稱"></div>
@@ -361,6 +506,7 @@ const views = {
       <section class="group">
         <button class="row action" data-act="exportWorkouts">匯出訓練紀錄（CSV · ${db.workouts.length} 筆）</button>
         <button class="row action" data-act="exportBody">匯出身體數據（CSV · ${db.body.length} 筆）</button>
+        <button class="row action" data-act="exportDiet">匯出飲食紀錄（CSV · ${db.meals.length} 筆）</button>
         <button class="row action" data-act="backup">備份全部資料（JSON）</button>
         <button class="row action" data-act="restore">從備份還原</button>
       </section>
@@ -372,7 +518,7 @@ const views = {
 const AI_RANGES = [[4, '近 4 週'], [12, '近 12 週'], [0, '全部']];
 
 function aiSection() {
-  if (!db.workouts.length && !db.body.length) return '';
+  if (!db.workouts.length && !db.body.length && !db.meals.length) return '';
   return `<div class="group-h"><span>請 AI 分析</span></div>
     <section class="group">
       <div class="row"><span class="k">範圍</span>
@@ -381,7 +527,7 @@ function aiSection() {
       </div>
       <button class="row action" data-act="copyPrompt">${icon('copy')}複製分析 prompt</button>
     </section>
-    <p class="foot">把訓練和身體數據整理成一段文字，貼到 Claude 或 ChatGPT 就能拿到建議。</p>`;
+    <p class="foot">把訓練、飲食和身體數據整理成一段文字，貼到 Claude 或 ChatGPT 就能拿到建議。</p>`;
 }
 
 function buildPrompt(weeks) {
@@ -394,7 +540,9 @@ function buildPrompt(weeks) {
   }
   const ws = db.workouts.filter(w => w.date >= from).sort(asc);
   const bs = db.body.filter(b => b.date >= from).sort(asc);
-  const start = from || [ws[0]?.date, bs[0]?.date].filter(Boolean).sort()[0] || todayStr();
+  const ds = dietDays(Infinity).filter(x => x.date >= from).reverse();
+  const g = goals();
+  const start = from || [ws[0]?.date, bs[0]?.date, ds[0]?.date].filter(Boolean).sort()[0] || todayStr();
   const spanWeeks = weeks || Math.max(1, Math.ceil((parseYmd(todayStr()) - parseYmd(start)) / (7 * 864e5)));
   const days = new Set(ws.map(w => w.date)).size;
 
@@ -415,8 +563,9 @@ function buildPrompt(weeks) {
     '1. 訓練頻率與一致性：每週練幾天、有沒有中斷',
     '2. 各部位訓練量是否平衡，哪些部位練太少或太多',
     '3. 主要動作的進步：重量或訓練量有沒有上升、哪些動作停滯',
-    '4. 身體組成（體重、體脂率、骨骼肌重）的變化，以及跟訓練的關係',
-    '5. 接下來 2–4 週最值得調整的 3–5 件事（動作選擇、組數次數、頻率、休息）',
+    '4. 飲食：蛋白質和熱量是否足夠、穩不穩定，跟我的目標合不合',
+    '5. 身體組成（體重、體脂率、骨骼肌重）的變化，以及跟訓練和飲食的關係',
+    '6. 接下來 2–4 週最值得調整的 3–5 件事（動作選擇、組數次數、頻率、休息、飲食）',
     '',
     '資料不夠判斷的地方，請直接告訴我要補充什麼。',
     '',
@@ -426,6 +575,11 @@ function buildPrompt(weeks) {
     `- 各部位每週平均組數：${sortCategories(Object.keys(main)).map(c => `${c} ${fmtNum(main[c] / spanWeeks)}`).join('、') || '無'}`,
     `- 各部位總組數：${parts}`,
   ];
+  if (ds.length) {
+    const avg = k => fmtNum(Math.round(ds.reduce((s, x) => s + x[k], 0) / ds.length));
+    lines.push(`- 飲食：記錄了 ${ds.length} 天，平均每天 ${avg('protein')} g 蛋白質、${avg('kcal')} kcal`);
+  }
+  lines.push(`- 每日目標：蛋白質 ${g.protein ? `${g.protein} g（體重 × ${db.goals.proteinPerKg} g/kg）` : '未設定'}、熱量 ${g.kcal ? `${fmtNum(g.kcal)} kcal` : '未設定'}`);
   if (ws.length) {
     lines.push('', '## 訓練紀錄（CSV，重量單位 kg）', 'date,exercise,body_parts,weight_kg,sets,reps,note',
       ...ws.map(w => [w.date, w.exercise, catsOf(w.exercise).join('/'), w.weight, w.sets, w.reps, w.note].map(csvCell).join(',')));
@@ -437,6 +591,12 @@ function buildPrompt(weeks) {
       ...bs.map(b => [b.date, b.weight, b.bodyFat, b.muscle, b.note].map(csvCell).join(',')));
   } else {
     lines.push('', '## 身體數據', '這段期間沒有身體數據。');
+  }
+  if (ds.length) {
+    lines.push('', '## 飲食（CSV，每日合計；沒列出的日子是沒記錄，不代表沒吃）', 'date,kcal,protein_g',
+      ...ds.map(x => [x.date, Math.round(x.kcal), Math.round(x.protein)].join(',')));
+  } else {
+    lines.push('', '## 飲食', '這段期間沒有飲食紀錄。');
   }
   return lines.join('\n');
 }
@@ -478,6 +638,16 @@ function weeklyFrequency() {
   }
   return out;
 }
+// 有記錄飲食的日子，新到舊，最多 limit 天
+function dietDays(limit) {
+  const byDate = {};
+  for (const m of db.meals) {
+    const t = (byDate[m.date] ||= { date: m.date, kcal: 0, protein: 0 });
+    t.kcal += m.kcal;
+    t.protein += m.protein;
+  }
+  return Object.values(byDate).sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);
+}
 function drawCharts() {
   document.querySelectorAll('[data-chart]').forEach(c => {
     const kind = c.dataset.chart;
@@ -503,15 +673,22 @@ function drawCharts() {
       const pts = db.body.filter(b => b[m.key] != null).sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts)
         .map(b => ({ label: fmtShort(b.date), value: b[m.key], tip: `${fmtShort(b.date)} · ${fmtNum(b[m.key])} ${m.unit}` }));
       Charts.draw(c, pts, { type: 'line', zero: false, ariaLabel: `${m.label}趨勢` });
+    } else if (kind.startsWith('diet:')) {
+      const key = kind.slice(5), unit = key === 'protein' ? 'g' : 'kcal';
+      const pts = dietDays(30).reverse()
+        .map(x => ({ label: fmtShort(x.date), value: x[key], tip: `${fmtShort(x.date)} · ${fmtNum(x[key])} ${unit}` }));
+      Charts.draw(c, pts, { type: 'bar', zero: true, target: goals()[key], ariaLabel: key === 'protein' ? '每日蛋白質' : '每日熱量' });
     }
   });
 }
 
 // ---------- render ----------
-const TABS = [['log', '記錄'], ['history', '歷史'], ['body', '身體'], ['charts', '圖表'], ['settings', '設定']];
+// 歷史從「訓練」頁右上角進入，不佔分頁
+const TABS = [['log', '訓練'], ['diet', '飲食'], ['body', '身體'], ['charts', '圖表'], ['settings', '設定']];
 function renderTabs() {
+  const active = state.tab === 'history' ? 'log' : state.tab;
   $('#tabs').innerHTML = TABS.map(([k, label]) =>
-    `<button role="tab" aria-selected="${state.tab === k}" data-act="tab" data-k="${k}">${icon(k)}<span>${label}</span></button>`).join('');
+    `<button role="tab" aria-selected="${active === k}" data-act="tab" data-k="${k}">${icon(k === 'log' ? 'dumbbell' : k)}<span>${label}</span></button>`).join('');
 }
 function render() {
   $('#view').innerHTML = views[state.tab]() + (state.tab === 'charts' ? aiSection() : '');
@@ -630,6 +807,46 @@ const actions = {
     toCsv(['date', 'weight_kg', 'body_fat_pct', 'skeletal_muscle_kg', 'note'],
       [...db.body].sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts).map(b => [b.date, b.weight, b.bodyFat, b.muscle, b.note])),
     'text/csv'),
+  exportDiet: () => shareFile(`diet-${todayStr()}.csv`,
+    toCsv(['date', 'food', 'qty', 'kcal', 'protein_g'],
+      [...db.meals].sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts).map(m => [m.date, m.name, m.qty, m.kcal, m.protein])),
+    'text/csv'),
+  dietQty: (_, q) => { state.dietQty = q; render(); },
+  addFood: (_, __, el) => {
+    const food = db.foods.find(f => f.id === el.dataset.id);
+    if (!food) return;
+    const q = state.dietQty;
+    const meal = { id: uid(), ts: Date.now(), date: state.dietDate, name: food.name, qty: q, kcal: food.kcal * q, protein: food.protein * q };
+    db.meals.push(meal);
+    if (!persist()) return;
+    render();
+    toast(`已加入 ${food.name}${q !== 1 ? ` ×${q}` : ''}`, () => { db.meals = db.meals.filter(m => m.id !== meal.id); persist(); render(); });
+  },
+  toggleFav: () => { state.dietForm.fav = !state.dietForm.fav; render(); },
+  addMeal: () => {
+    const f = state.dietForm;
+    const kcal = parseNum(f.kcal) ?? 0, protein = parseNum(f.protein) ?? 0;
+    const name = f.name.trim();
+    db.meals.push({ id: uid(), ts: Date.now(), date: state.dietDate, name, qty: 1, kcal, protein });
+    const savedFav = f.fav && name && !db.foods.some(x => x.name === name);
+    if (savedFav) db.foods.push({ id: uid(), name, kcal, protein });
+    if (!persist()) return;
+    state.dietForm = { name: '', kcal: '', protein: '', fav: false };
+    render();
+    toast(savedFav ? `已加入，也存成常吃的食物` : '已加入');
+  },
+  delMeal: (_, __, el) => removeWith('meals', el.dataset.id, '一筆飲食'),
+  delFood: (_, __, el) => removeWith('foods', el.dataset.id, '常吃的食物'),
+  addFoodItem: () => {
+    const nf = state.newFood;
+    const name = nf.name.trim();
+    if (!name) return;
+    db.foods.push({ id: uid(), name, kcal: parseNum(nf.kcal) ?? 0, protein: parseNum(nf.protein) ?? 0 });
+    persist();
+    state.newFood = { name: '', kcal: '', protein: '' };
+    render();
+    toast(`已新增「${name}」`);
+  },
   backup: () => shareFile(`liftlog-backup-${todayStr()}.json`, JSON.stringify({ app: 'liftlog', version: 1, ...db }, null, 1), 'application/json'),
   restore: () => $('#importFile').click(),
 };
@@ -644,6 +861,10 @@ document.addEventListener('click', ev => {
 function setField(field, value) {
   if (field.startsWith('b.')) state.bodyForm[field.slice(2)] = value;
   else if (field.startsWith('n.')) state.newEx[field.slice(2)] = value;
+  else if (field === 'd.date') state.dietDate = value || todayStr();
+  else if (field.startsWith('d.')) state.dietForm[field.slice(2)] = value;
+  else if (field.startsWith('f.')) state.newFood[field.slice(2)] = value;
+  else if (field.startsWith('g.')) { db.goals[field.slice(2)] = value.trim() === '' ? null : parseNum(value); persist(); }
   else if (field === 'chartExercise') state.chartExercise = value;
   else state.form[field] = value;
 }
@@ -659,6 +880,17 @@ document.addEventListener('input', ev => {
     const btn = $('[data-act="addExercise"]');
     const name = state.newEx.name.trim();
     if (btn) btn.disabled = !name || !state.newEx.categories.length || db.exercises.some(e => e.name === name);
+  } else if (field.startsWith('d.') && field !== 'd.date') {
+    const btn = $('[data-act="addMeal"]');
+    if (btn) btn.disabled = parseNum(state.dietForm.kcal) === null && parseNum(state.dietForm.protein) === null;
+  } else if (field.startsWith('f.')) {
+    const btn = $('[data-act="addFoodItem"]');
+    const nf = state.newFood;
+    if (btn) btn.disabled = !nf.name.trim() || (parseNum(nf.kcal) === null && parseNum(nf.protein) === null);
+  } else if (field.startsWith('g.')) {
+    const foot = $('#goal-foot');
+    const w = latestWeight(), g = goals();
+    if (foot && w) foot.textContent = `以最新體重 ${fmtNum(w)} kg 計算，每天蛋白質目標 ${g.protein ?? '—'} g。增肌常見 1.6–2.2 g/kg。`;
   }
 });
 document.addEventListener('change', ev => {
@@ -666,7 +898,7 @@ document.addEventListener('change', ev => {
   if (field) setField(field, ev.target.value);
   if (field === 'category') { pickCategory(state.form.category); render(); }
   if (field === 'exercise') { fillFromLast(state.form.exercise); render(); }
-  if (field === 'chartExercise') render();
+  if (field === 'chartExercise' || field === 'd.date') render();
 });
 
 $('#importFile').addEventListener('change', async ev => {
@@ -675,7 +907,7 @@ $('#importFile').addEventListener('change', async ev => {
   if (!file) return;
   try {
     const next = normalize(JSON.parse(await file.text()));
-    const ok = confirm(`用備份取代目前的資料？\n\n備份裡有 ${next.workouts.length} 筆訓練、${next.body.length} 筆身體數據。\n目前的 ${db.workouts.length} 筆訓練、${db.body.length} 筆身體數據會被取代。`);
+    const ok = confirm(`用備份取代目前的資料？\n\n備份裡有 ${next.workouts.length} 筆訓練、${next.meals.length} 筆飲食、${next.body.length} 筆身體數據。\n目前的 ${db.workouts.length} 筆訓練、${db.meals.length} 筆飲食、${db.body.length} 筆身體數據會被取代。`);
     if (!ok) return;
     db = next;
     persist();

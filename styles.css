@@ -121,6 +121,28 @@ h1 { font-size: 34px; line-height: 41px; font-weight: 700; margin: 0; }
 .row.action { width: 100%; border: 0; background: none; color: var(--tint); text-align: left; justify-content: flex-start; }
 .row.action:active { background: var(--fill); }
 .row.action.danger { color: var(--danger); }
+/* 返回（導覽列左上） */
+.backbtn {
+  display: inline-flex; align-items: center; gap: 2px;
+  min-height: 44px; margin: 0 0 -8px -6px; padding: 0 8px 0 0;
+  border: 0; background: none; color: var(--tint); font-size: 17px;
+}
+.backbtn svg.i { width: 24px; height: 24px; stroke-width: 2.2; }
+
+/* 飲食進度 */
+.row.meter { display: block; padding-top: 12px; padding-bottom: 12px; }
+.meter-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.meter-top .meta b { color: var(--label); font-weight: 600; font-size: 20px; }
+.bar { height: 6px; margin: 10px 0 6px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.bar span { display: block; height: 100%; border-radius: 3px; background: var(--mark); transition: width 0.25s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.row.meter .sub { font-size: 13px; color: var(--label2); }
+
+/* 常吃的食物：整列可點 */
+.row.food { width: 100%; border: 0; background: none; text-align: left; color: inherit; }
+.row.food:active { background: var(--fill); }
+.row.food .name { font-weight: 500; }
+.row.food svg.i { color: var(--tint); width: 20px; height: 20px; stroke-width: 2.2; }
+
 .chips-row { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; }
 .chips-row .k { padding-top: 6px; }
 .chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -171,6 +193,8 @@ h1 { font-size: 34px; line-height: 41px; font-weight: 700; margin: 0; }
 .c-dot { fill: var(--mark); stroke: var(--surface); stroke-width: 2; }
 .c-cross { stroke: var(--label2); stroke-width: 1; stroke-dasharray: 3 3; }
 .c-hit { fill: transparent; }
+.c-target { stroke: var(--label); stroke-width: 1.5; stroke-dasharray: 5 4; opacity: 0.6; }
+.c-target-lab { fill: var(--label); font-weight: 600; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
 .tip {
   position: absolute; top: 0; transform: translate(-50%, calc(-100% - 6px));
   background: var(--label); color: var(--surface);

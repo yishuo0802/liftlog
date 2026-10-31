@@ -1,5 +1,5 @@
 // 離線快取：有網路時一律先抓最新版，沒網路才用快取
-const CACHE = 'liftlog-v3';
+const CACHE = 'liftlog-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'charts.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

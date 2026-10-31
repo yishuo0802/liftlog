@@ -39,7 +39,8 @@ const Charts = (() => {
     const padL = 38, padR = 10, padT = 8, padB = 24;
     const plotW = W - padL - padR, plotH = H - padT - padB;
     const values = points.map(p => p.value);
-    let lo = Math.min(...values), hi = Math.max(...values);
+    const target = Number.isFinite(opts.target) ? opts.target : null;
+    let lo = Math.min(...values), hi = Math.max(...values, target ?? -Infinity);
     if (opts.zero) lo = Math.min(0, lo);
     if (!opts.zero) { const pad = (hi - lo) * 0.15 || Math.abs(hi) * 0.05 || 1; lo -= pad; hi += pad; }
     const ticks = niceTicks(lo, hi);
@@ -101,6 +102,15 @@ const Charts = (() => {
         svg.appendChild(dot);
         marks.push(dot);
       });
+    }
+
+    // 目標參考線：畫在資料上方，標籤放右上
+    if (target !== null) {
+      const ty = y(target);
+      svg.appendChild(el('line', { x1: padL, x2: W - padR, y1: ty, y2: ty, class: 'c-target' }));
+      const lab = el('text', { x: W - padR, y: ty - 5, 'text-anchor': 'end', class: 'c-lab c-target-lab' });
+      lab.textContent = `目標 ${fmt(target)}`;
+      svg.appendChild(lab);
     }
 
     const hit = el('rect', { x: padL, y: 0, width: plotW, height: H - padB, class: 'c-hit' });
