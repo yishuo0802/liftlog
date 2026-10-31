@@ -1,10 +1,36 @@
 'use strict';
 
 const KEY = 'liftlog.v1';
-const DEFAULT_EXERCISES = [
-  ['深蹲', '腿'], ['硬舉', '背'], ['臥推', '胸'], ['肩推', '肩'],
-  ['引體向上', '背'], ['划船', '背'], ['腿推', '腿'], ['二頭彎舉', '手臂'],
-];
+const CATEGORIES = ['胸', '背', '肩', '腿', '臀', '二頭', '三頭', '核心'];
+// 一般連鎖健身房常見的器材與動作
+const DEFAULT_LIBRARY = {
+  胸: ['槓鈴臥推', '上斜槓鈴臥推', '啞鈴臥推', '上斜啞鈴臥推', '史密斯臥推', '坐姿推胸機', '上斜推胸機', '蝴蝶機夾胸', '繩索夾胸', '雙槓撐體', '伏地挺身'],
+  背: ['硬舉', '引體向上', '輔助引體向上機', '滑輪下拉', '坐姿繩索划船', '坐姿划船機', '槓鈴划船', '單臂啞鈴划船', 'T 槓划船', '直臂下拉', '羅馬椅背伸展'],
+  肩: ['槓鈴肩推', '啞鈴肩推', '坐姿肩推機', '啞鈴側平舉', '繩索側平舉', '側平舉機', '啞鈴前平舉', '反向飛鳥機', '臉拉', '聳肩'],
+  腿: ['槓鈴深蹲', '史密斯深蹲', '哈克深蹲機', '腿推機', '腿伸展機', '坐姿腿彎舉機', '俯臥腿彎舉機', '羅馬尼亞硬舉', '保加利亞分腿蹲', '弓箭步', '站姿提踵機', '坐姿提踵機'],
+  臀: ['槓鈴臀推', '臀推機', '髖外展機', '髖內收機', '繩索後踢腿'],
+  二頭: ['槓鈴彎舉', '啞鈴彎舉', '錘式彎舉', '牧師椅彎舉', '繩索彎舉', '二頭彎舉機'],
+  三頭: ['繩索下壓', '過頭繩索伸展', '仰臥臂屈伸', '窄握臥推', '三頭伸展機'],
+  核心: ['捲腹', '捲腹機', '繩索捲腹', '懸垂舉腿', '健腹輪', '俄羅斯轉體'],
+};
+// 複合動作的次要部位：選這些部位時也會列出來
+const SECONDARY = {
+  槓鈴臥推: ['三頭', '肩'], 上斜槓鈴臥推: ['肩', '三頭'], 啞鈴臥推: ['三頭'], 上斜啞鈴臥推: ['肩'],
+  史密斯臥推: ['三頭'], 坐姿推胸機: ['三頭'], 上斜推胸機: ['肩'], 雙槓撐體: ['三頭', '肩'], 伏地挺身: ['三頭', '核心'],
+  硬舉: ['腿', '臀', '核心'], 引體向上: ['二頭'], 輔助引體向上機: ['二頭'], 滑輪下拉: ['二頭'],
+  坐姿繩索划船: ['二頭'], 坐姿划船機: ['二頭'], 槓鈴划船: ['二頭'], 單臂啞鈴划船: ['二頭'], 'T 槓划船': ['二頭'],
+  羅馬椅背伸展: ['臀'],
+  槓鈴肩推: ['三頭'], 啞鈴肩推: ['三頭'], 坐姿肩推機: ['三頭'], 反向飛鳥機: ['背'], 臉拉: ['背'], 聳肩: ['背'],
+  槓鈴深蹲: ['臀', '核心'], 史密斯深蹲: ['臀'], 哈克深蹲機: ['臀'], 腿推機: ['臀'], 羅馬尼亞硬舉: ['臀', '背'],
+  保加利亞分腿蹲: ['臀'], 弓箭步: ['臀'],
+  槓鈴臀推: ['腿'], 臀推機: ['腿'],
+  窄握臥推: ['胸'], 懸垂舉腿: ['腿'],
+};
+const DEFAULTS_VERSION = 2;
+const defaultExercises = () => Object.entries(DEFAULT_LIBRARY).flatMap(([main, names]) =>
+  names.map(name => ({ name, categories: [main, ...(SECONDARY[name] || [])] })));
+const categoryOrder = c => { const i = CATEGORIES.indexOf(c); return i < 0 ? CATEGORIES.length : i; };
+const sortCategories = list => [...list].sort((a, b) => categoryOrder(a) - categoryOrder(b) || a.localeCompare(b, 'zh-Hant'));
 const BODY_METRICS = [
   { key: 'weight', label: '體重', unit: 'kg' },
   { key: 'bodyFat', label: '體脂率', unit: '%' },
@@ -42,18 +68,36 @@ const icon = (name, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-
 
 // ---------- storage ----------
 function freshDb() {
-  return { exercises: DEFAULT_EXERCISES.map(([name, category]) => ({ name, category })), workouts: [], body: [] };
+  return { defaultsVersion: DEFAULTS_VERSION, exercises: defaultExercises(), workouts: [], body: [] };
 }
 function normalize(d) {
   if (!d || typeof d !== 'object') throw new Error('格式不對');
   const out = {
-    exercises: Array.isArray(d.exercises) ? d.exercises.filter(e => e && e.name).map(e => ({ name: String(e.name), category: String(e.category || '') })) : [],
+    defaultsVersion: +d.defaultsVersion || 1,
+    exercises: Array.isArray(d.exercises) ? d.exercises.filter(e => e && e.name).map(e => {
+      // 舊版是單一 category，新版是 categories 陣列（第一個是主要部位）
+      const cats = Array.isArray(e.categories) ? e.categories : [e.category];
+      const clean = [...new Set(cats.map(c => String(c || '').trim()).filter(Boolean))];
+      return { name: String(e.name), categories: clean.length ? clean : ['其他'] };
+    }) : [],
     workouts: Array.isArray(d.workouts) ? d.workouts.filter(w => w && w.date && w.exercise) : [],
     body: Array.isArray(d.body) ? d.body.filter(b => b && b.date) : [],
   };
   out.workouts.forEach(w => { w.id ||= uid(); w.ts ||= 0; w.weight = +w.weight || 0; w.sets = +w.sets || 1; w.reps = +w.reps || 1; w.note ||= ''; });
   out.body.forEach(b => { b.id ||= uid(); b.ts ||= 0; b.note ||= ''; });
-  return out;
+  return migrate(out);
+}
+// 舊版只有 8 個動作：補上新的動作庫，舊動作和紀錄都保留
+function migrate(d) {
+  if (d.defaultsVersion >= DEFAULTS_VERSION) return d;
+  for (const e of d.exercises) e.categories = e.categories.map(c => c === '手臂' ? '二頭' : c);
+  for (const e of defaultExercises()) {
+    const have = d.exercises.find(x => x.name === e.name);
+    if (have) have.categories = e.categories;
+    else d.exercises.push(e);
+  }
+  d.defaultsVersion = DEFAULTS_VERSION;
+  return d;
 }
 function load() {
   try {
@@ -72,6 +116,7 @@ function persist() {
   }
 }
 let db = load();
+persist(); // 寫回遷移後的動作清單
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
 // ---------- state ----------
@@ -81,10 +126,28 @@ const state = {
   chartMode: 'train',
   chartExercise: null,
   saved: { workout: false, body: false },
-  form: { exercise: '', date: todayStr(), weight: 20, sets: 3, reps: 10, note: '' },
+  form: { category: '', exercise: '', date: todayStr(), weight: 20, sets: 3, reps: 10, note: '' },
   bodyForm: { date: todayStr(), weight: '', bodyFat: '', muscle: '', note: '' },
-  newEx: { name: '', category: '' },
+  newEx: { name: '', categories: [] },
 };
+
+const catsOf = name => db.exercises.find(e => e.name === name)?.categories || ['其他'];
+const catOf = name => catsOf(name)[0];
+// 主要部位是這個部位的排前面，次要的排後面
+const exercisesIn = cat => {
+  const hits = db.exercises.filter(e => e.categories.includes(cat));
+  return [...hits.filter(e => e.categories[0] === cat), ...hits.filter(e => e.categories[0] !== cat)].map(e => e.name);
+};
+const allCategories = () => sortCategories([...new Set([...CATEGORIES.filter(c => db.exercises.some(e => e.categories.includes(c))), ...db.exercises.flatMap(e => e.categories)])]);
+
+/// 換部位時：先選這個部位最近練過的動作，沒有就選第一個
+function pickCategory(cat) {
+  state.form.category = cat;
+  const names = exercisesIn(cat);
+  const recent = db.workouts.filter(w => names.includes(w.exercise)).sort(byNewest)[0];
+  state.form.exercise = recent?.exercise || names[0] || '';
+  fillFromLast(state.form.exercise);
+}
 
 function lastFor(name) {
   return db.workouts.filter(w => w.exercise === name).sort(byNewest)[0];
@@ -96,8 +159,13 @@ function fillFromLast(name) {
 }
 function initForm() {
   const recent = [...db.workouts].sort(byNewest)[0];
-  state.form.exercise = recent?.exercise || db.exercises[0]?.name || '';
-  fillFromLast(state.form.exercise);
+  if (recent) {
+    state.form.category = catOf(recent.exercise);
+    state.form.exercise = recent.exercise;
+    fillFromLast(recent.exercise);
+  } else {
+    pickCategory(allCategories()[0] || '其他');
+  }
 }
 initForm();
 
@@ -114,12 +182,15 @@ function toast(msg, undo) {
 }
 
 // ---------- shared bits ----------
+function plainSelect(field, options, selected, label) {
+  const opts = options.map(o => `<option${o === selected ? ' selected' : ''}>${esc(o)}</option>`).join('');
+  return `<span class="selectwrap"><select data-field="${field}" aria-label="${label}">${opts}</select>${icon('updown')}</span>`;
+}
+// 圖表用：只列有紀錄的動作，按部位分組
 function exerciseSelect(field, selected, names) {
   const groups = {};
-  for (const e of db.exercises) (groups[e.category || '其他'] ||= []).push(e.name);
-  // 歷史紀錄裡有、但動作清單已刪除的動作，也要能選
-  for (const n of names || []) if (!db.exercises.some(e => e.name === n)) (groups['其他'] ||= []).push(n);
-  const opts = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'zh-Hant')).map(cat =>
+  for (const n of names) (groups[catOf(n)] ||= []).push(n);
+  const opts = sortCategories(Object.keys(groups)).map(cat =>
     `<optgroup label="${esc(cat)}">${groups[cat].map(n => `<option${n === selected ? ' selected' : ''}>${esc(n)}</option>`).join('')}</optgroup>`
   ).join('');
   return `<span class="selectwrap"><select data-field="${field}" aria-label="動作">${opts}</select>${icon('updown')}</span>`;
@@ -151,7 +222,8 @@ const views = {
     const today = db.workouts.filter(w => w.date === todayStr()).sort(byNewest);
     return `${title('記錄訓練')}
       <section class="group">
-        <label class="row"><span class="k">動作</span>${exerciseSelect('exercise', f.exercise)}</label>
+        <label class="row"><span class="k">部位</span>${plainSelect('category', allCategories(), f.category, '部位')}</label>
+        <label class="row"><span class="k">動作</span>${plainSelect('exercise', exercisesIn(f.category), f.exercise, '動作')}</label>
         <label class="row"><span class="k">日期</span><input type="date" data-field="date" value="${f.date}" max="${todayStr()}"></label>
       </section>
       <section class="group">
@@ -253,23 +325,34 @@ const views = {
 
   settings() {
     const editing = state.editing.exercises;
-    const cats = [...new Set(db.exercises.map(e => e.category).filter(Boolean))];
-    const ex = [...db.exercises].sort((a, b) => (a.category || '').localeCompare(b.category || '', 'zh-Hant') || a.name.localeCompare(b.name, 'zh-Hant'));
     const nameOk = state.newEx.name.trim() && !db.exercises.some(e => e.name === state.newEx.name.trim());
+    const picked = state.newEx.categories;
+    // 依主要部位分組
+    const groups = {};
+    for (const e of db.exercises) (groups[e.categories[0]] ||= []).push(e);
     return `${title('設定')}
       <div class="group-h"><span>新增動作</span></div>
       <section class="group">
-        <div class="row"><input class="full" data-field="n.name" placeholder="動作名稱，例如：保加利亞分腿蹲" value="${esc(state.newEx.name)}" aria-label="動作名稱"></div>
-        <div class="row"><input class="full" data-field="n.category" list="cats" placeholder="部位，例如：腿" value="${esc(state.newEx.category)}" aria-label="部位"></div>
-        <button class="row action" data-act="addExercise"${nameOk ? '' : ' disabled'}>${icon('plus')}新增</button>
+        <div class="row"><input class="full" data-field="n.name" placeholder="動作名稱，例如：腿推（單腳）" value="${esc(state.newEx.name)}" aria-label="動作名稱"></div>
+        <div class="row chips-row">
+          <span class="k">部位</span>
+          <span class="chips" role="group" aria-label="部位（可複選）">${CATEGORIES.map(c => {
+            const i = picked.indexOf(c);
+            return `<button class="chip" aria-pressed="${i >= 0}" data-act="toggleNewCat" data-k="${c}">${c}${i === 0 && picked.length > 1 ? '・主' : ''}</button>`;
+          }).join('')}</span>
+        </div>
+        <button class="row action" data-act="addExercise"${nameOk && picked.length ? '' : ' disabled'}>${icon('plus')}新增</button>
       </section>
-      <datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
+      <p class="foot">可以選多個部位，第一個點的是主要部位。</p>
 
       <div class="group-h"><span>動作清單 · ${db.exercises.length}</span><button class="linkbtn" data-act="toggleEdit" data-k="exercises">${editing ? '完成' : '編輯'}</button></div>
-      <section class="group">${ex.map(e => `<div class="row entry">
-        <div class="main">${esc(e.name)}</div><div class="meta">${esc(e.category)}</div>
-        ${editing ? `<button class="del" data-act="delExercise" data-name="${esc(e.name)}">刪除</button>` : ''}
-      </div>`).join('')}</section>
+      ${sortCategories(Object.keys(groups)).map(cat => `
+        <div class="group-h"><span>${esc(cat)}</span></div>
+        <section class="group">${groups[cat].map(e => `<div class="row entry">
+          <div class="main">${esc(e.name)}</div>
+          <div class="meta">${e.categories.length > 1 ? `也練 ${esc(e.categories.slice(1).join('、'))}` : ''}</div>
+          ${editing ? `<button class="del" data-act="delExercise" data-name="${esc(e.name)}">刪除</button>` : ''}
+        </div>`).join('')}</section>`).join('')}
       <p class="foot">刪除動作不會刪掉它的歷史紀錄。</p>
 
       <div class="group-h"><span>資料</span></div>
@@ -427,12 +510,18 @@ const actions = {
   },
   addExercise: () => {
     const name = state.newEx.name.trim();
-    if (!name || db.exercises.some(e => e.name === name)) return;
-    db.exercises.push({ name, category: state.newEx.category.trim() });
+    if (!name || !state.newEx.categories.length || db.exercises.some(e => e.name === name)) return;
+    db.exercises.push({ name, categories: [...state.newEx.categories] });
     persist();
-    state.newEx = { name: '', category: '' };
+    state.newEx = { name: '', categories: [] };
     render();
     toast(`已新增「${name}」`);
+  },
+  toggleNewCat: c => {
+    const cats = state.newEx.categories;
+    const i = cats.indexOf(c);
+    if (i >= 0) cats.splice(i, 1); else cats.push(c);
+    render();
   },
   exportWorkouts: () => shareFile(`workouts-${todayStr()}.csv`,
     toCsv(['date', 'exercise', 'weight_kg', 'sets', 'reps', 'volume', 'note'],
@@ -470,11 +559,13 @@ document.addEventListener('input', ev => {
   } else if (field.startsWith('n.')) {
     const btn = $('[data-act="addExercise"]');
     const name = state.newEx.name.trim();
-    if (btn) btn.disabled = !name || db.exercises.some(e => e.name === name);
+    if (btn) btn.disabled = !name || !state.newEx.categories.length || db.exercises.some(e => e.name === name);
   }
 });
 document.addEventListener('change', ev => {
   const field = ev.target.dataset?.field;
+  if (field) setField(field, ev.target.value);
+  if (field === 'category') { pickCategory(state.form.category); render(); }
   if (field === 'exercise') { fillFromLast(state.form.exercise); render(); }
   if (field === 'chartExercise') render();
 });

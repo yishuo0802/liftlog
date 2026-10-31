@@ -1,5 +1,5 @@
 // 離線快取：先用快取，背景更新
-const CACHE = 'liftlog-v1';
+const CACHE = 'liftlog-v2';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'charts.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

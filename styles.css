@@ -121,6 +121,16 @@ h1 { font-size: 34px; line-height: 41px; font-weight: 700; margin: 0; }
 .row.action { width: 100%; border: 0; background: none; color: var(--tint); text-align: left; justify-content: flex-start; }
 .row.action:active { background: var(--fill); }
 .row.action.danger { color: var(--danger); }
+.chips-row { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; }
+.chips-row .k { padding-top: 6px; }
+.chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.chip {
+  min-height: 36px; min-width: 44px; padding: 0 12px;
+  border: 0; border-radius: 18px;
+  background: var(--fill); color: var(--label); font-size: 15px;
+  transition: background-color 0.15s ease-out, color 0.15s ease-out;
+}
+.chip[aria-pressed="true"] { background: var(--tint); color: var(--on-tint); font-weight: 600; }
 .row.action:disabled { color: var(--label2); opacity: 0.6; cursor: default; }
 .row.action:disabled:active { background: none; }
 .row.action svg.i { width: 20px; height: 20px; }
