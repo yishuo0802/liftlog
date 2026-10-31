@@ -152,6 +152,9 @@ h1 { font-size: 34px; line-height: 41px; font-weight: 700; margin: 0; }
 }
 .seg button[aria-selected="true"] { background: var(--seg-on); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14); }
 
+.seg.mini { margin: 0; flex: none; }
+.seg.mini button { flex: none; min-height: 34px; padding: 0 10px; font-size: 13px; }
+
 /* Charts */
 .chart-card { padding: 14px 16px 10px; }
 .chart-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }

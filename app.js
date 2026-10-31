@@ -62,6 +62,7 @@ const ICON = {
   minus: '<path d="M6 12h12"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   updown: '<path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4"/>',
+  copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/><path d="M15.5 8.5V6.5a2.5 2.5 0 0 0-2.5-2.5H6.5A2.5 2.5 0 0 0 4 6.5V13a2.5 2.5 0 0 0 2.5 2.5h2"/>',
   dumbbell: '<path d="M7 12h10"/><rect x="4" y="8" width="3" height="8" rx="1"/><rect x="17" y="8" width="3" height="8" rx="1"/><path d="M2.5 10.5v3M21.5 10.5v3"/>',
 };
 const icon = (name, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
@@ -125,6 +126,7 @@ const state = {
   editing: { history: false, body: false, exercises: false },
   chartMode: 'train',
   chartExercise: null,
+  aiWeeks: 12, // 0 = 全部
   saved: { workout: false, body: false },
   form: { category: '', exercise: '', date: todayStr(), weight: 20, sets: 3, reps: 10, note: '' },
   bodyForm: { date: todayStr(), weight: '', bodyFat: '', muscle: '', note: '' },
@@ -366,6 +368,98 @@ const views = {
   },
 };
 
+// ---------- AI 分析 prompt ----------
+const AI_RANGES = [[4, '近 4 週'], [12, '近 12 週'], [0, '全部']];
+
+function aiSection() {
+  if (!db.workouts.length && !db.body.length) return '';
+  return `<div class="group-h"><span>請 AI 分析</span></div>
+    <section class="group">
+      <div class="row"><span class="k">範圍</span>
+        <span class="seg mini" role="tablist" aria-label="分析範圍">${AI_RANGES.map(([w, label]) =>
+          `<button role="tab" aria-selected="${state.aiWeeks === w}" data-act="aiRange" data-d="${w}">${label}</button>`).join('')}</span>
+      </div>
+      <button class="row action" data-act="copyPrompt">${icon('copy')}複製分析 prompt</button>
+    </section>
+    <p class="foot">把訓練和身體數據整理成一段文字，貼到 Claude 或 ChatGPT 就能拿到建議。</p>`;
+}
+
+function buildPrompt(weeks) {
+  const asc = (a, b) => a.date.localeCompare(b.date) || a.ts - b.ts;
+  let from = '';
+  if (weeks) {
+    const s = weekStart(new Date());
+    s.setDate(s.getDate() - 7 * (weeks - 1));
+    from = ymd(s);
+  }
+  const ws = db.workouts.filter(w => w.date >= from).sort(asc);
+  const bs = db.body.filter(b => b.date >= from).sort(asc);
+  const start = from || [ws[0]?.date, bs[0]?.date].filter(Boolean).sort()[0] || todayStr();
+  const spanWeeks = weeks || Math.max(1, Math.ceil((parseYmd(todayStr()) - parseYmd(start)) / (7 * 864e5)));
+  const days = new Set(ws.map(w => w.date)).size;
+
+  // 各部位組數：主要部位算整組，次要部位另外列
+  const main = {}, assist = {};
+  for (const w of ws) {
+    const [first, ...rest] = catsOf(w.exercise);
+    main[first] = (main[first] || 0) + w.sets;
+    for (const c of rest) assist[c] = (assist[c] || 0) + w.sets;
+  }
+  const parts = sortCategories([...new Set([...CATEGORIES, ...Object.keys(main), ...Object.keys(assist)])])
+    .map(c => `${c} ${main[c] || 0} 組${assist[c] ? `（另有 ${assist[c]} 組複合動作帶到）` : ''}`).join('、');
+
+  const rangeLabel = weeks ? `近 ${weeks} 週` : '全部紀錄';
+  const lines = [
+    `你是我的重訓教練兼運動營養顧問。以下是我用健身紀錄 App 記下的資料（${rangeLabel}，${start} 到 ${todayStr()}）。請用繁體中文回答，具體一點，不要泛泛而談：`,
+    '',
+    '1. 訓練頻率與一致性：每週練幾天、有沒有中斷',
+    '2. 各部位訓練量是否平衡，哪些部位練太少或太多',
+    '3. 主要動作的進步：重量或訓練量有沒有上升、哪些動作停滯',
+    '4. 身體組成（體重、體脂率、骨骼肌重）的變化，以及跟訓練的關係',
+    '5. 接下來 2–4 週最值得調整的 3–5 件事（動作選擇、組數次數、頻率、休息）',
+    '',
+    '資料不夠判斷的地方，請直接告訴我要補充什麼。',
+    '',
+    '## 摘要',
+    `- 期間：${start} 到 ${todayStr()}（約 ${spanWeeks} 週）`,
+    `- 訓練天數：${days} 天，平均每週 ${fmtNum(days / spanWeeks)} 天`,
+    `- 各部位每週平均組數：${sortCategories(Object.keys(main)).map(c => `${c} ${fmtNum(main[c] / spanWeeks)}`).join('、') || '無'}`,
+    `- 各部位總組數：${parts}`,
+  ];
+  if (ws.length) {
+    lines.push('', '## 訓練紀錄（CSV，重量單位 kg）', 'date,exercise,body_parts,weight_kg,sets,reps,note',
+      ...ws.map(w => [w.date, w.exercise, catsOf(w.exercise).join('/'), w.weight, w.sets, w.reps, w.note].map(csvCell).join(',')));
+  } else {
+    lines.push('', '## 訓練紀錄', '這段期間沒有訓練紀錄。');
+  }
+  if (bs.length) {
+    lines.push('', '## 身體數據（CSV，InBody 或體重計）', 'date,weight_kg,body_fat_pct,skeletal_muscle_kg,note',
+      ...bs.map(b => [b.date, b.weight, b.bodyFat, b.muscle, b.note].map(csvCell).join(',')));
+  } else {
+    lines.push('', '## 身體數據', '這段期間沒有身體數據。');
+  }
+  return lines.join('\n');
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    // 舊版 Safari 退回用隱藏的 textarea 複製
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  }
+}
+
 // ---------- chart data ----------
 function weekStart(d) {
   const s = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -420,7 +514,7 @@ function renderTabs() {
     `<button role="tab" aria-selected="${state.tab === k}" data-act="tab" data-k="${k}">${icon(k)}<span>${label}</span></button>`).join('');
 }
 function render() {
-  $('#view').innerHTML = views[state.tab]();
+  $('#view').innerHTML = views[state.tab]() + (state.tab === 'charts' ? aiSection() : '');
   renderTabs();
   if (state.tab === 'charts') drawCharts();
 }
@@ -472,6 +566,11 @@ const actions = {
   undo: () => { if (undoFn) { undoFn(); undoFn = null; $('#toast').classList.remove('show'); } },
   toggleEdit: k => { state.editing[k] = !state.editing[k]; render(); },
   chartMode: k => { state.chartMode = k; render(); },
+  aiRange: (_, w) => { state.aiWeeks = w; render(); },
+  copyPrompt: async () => {
+    const ok = await copyText(buildPrompt(state.aiWeeks));
+    toast(ok ? '已複製，貼到 Claude 或 ChatGPT 就好' : '複製失敗，請再按一次');
+  },
   step: (k, d) => {
     const f = state.form;
     const min = k === 'weight' ? 0 : 1;
