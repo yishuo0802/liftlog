@@ -258,8 +258,8 @@ function editorTotals(e) {
 function editorValid(e) {
   const hasNum = parseNum(e.kcal) !== null || parseNum(e.protein) !== null;
   if (e.mode === 'use') return hasNum;
-  if (e.mode === 'edit') return hasNum && e.name.trim();
-  return hasNum && (!e.fav || e.name.trim());
+  if (e.mode === 'once') return hasNum && (!e.fav || e.name.trim());
+  return hasNum && e.name.trim(); // new、edit 要有名稱才能存
 }
 function foodEditor(e) {
   const dayLabel = state.dietDate === todayStr() ? '今天' : fmtShort(state.dietDate);
@@ -267,14 +267,14 @@ function foodEditor(e) {
     <span class="ctl"><input id="e-${key}" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="e.${key}" value="${esc(e[key])}"><span class="unit">${unit}</span></span></div>`;
   const nameRow = e.mode === 'use'
     ? `<div class="row editor-head"><span class="name">${esc(e.name)}</span><span class="sub">每份數字，這次可以改</span></div>`
-    : `<div class="row editor-head"><input class="full" data-field="e.name" placeholder="名稱，例如：XX 便當 雞腿飯" value="${esc(e.name)}" aria-label="食物名稱"${e.mode === 'new' ? ' autofocus' : ''}></div>`;
+    : `<div class="row editor-head"><input class="full" data-field="e.name" placeholder="${e.mode === 'once' ? '名稱（選填），例如：聚餐火鍋' : '名稱，例如：XX 便當 雞腿飯'}" value="${esc(e.name)}" aria-label="食物名稱"></div>`;
   const qtyRow = e.mode === 'edit' ? '' : `<div class="row"><span class="k">份量</span>
     <span class="ctl"><span class="val">×${fmtNum(e.qty)}</span>
       <span class="stepper">
         <button data-act="eQty" data-d="-0.5" aria-label="份量減少">${icon('minus')}</button>
         <button data-act="eQty" data-d="0.5" aria-label="份量增加">${icon('plus')}</button>
       </span></span></div>`;
-  const favRow = e.mode === 'new' ? `<div class="row"><span class="k">存成常吃的食物</span>
+  const favRow = e.mode === 'once' ? `<div class="row"><span class="k">也存成常吃的食物</span>
     <button class="chip" aria-pressed="${e.fav}" data-act="eFav">${e.fav ? '會存' : '不存'}</button></div>` : '';
   const buttons = e.mode === 'edit'
     ? `<button class="btn" data-act="delFood" data-id="${e.id}">刪除</button>
@@ -284,8 +284,8 @@ function foodEditor(e) {
        <button class="btn primary-sm" data-act="confirmMeal"${editorValid(e) ? '' : ' disabled'}>加入${dayLabel}</button>`;
   return `<div class="editor" role="group" aria-label="確認食物">
     ${nameRow}
-    ${numRow('kcal', '每份熱量', 'kcal')}
-    ${numRow('protein', '每份蛋白質', 'g')}
+    ${numRow('kcal', e.mode === 'once' ? '熱量' : '每份熱量', 'kcal')}
+    ${numRow('protein', e.mode === 'once' ? '蛋白質' : '每份蛋白質', 'g')}
     ${qtyRow}
     ${favRow}
     ${e.mode === 'edit' ? '' : `<div class="row total"><span id="e-total">${editorTotals(e)}</span></div>`}
@@ -375,11 +375,17 @@ const views = {
           <span class="meta">${fmtNum(food.kcal)} kcal · ${fmtNum(food.protein)} g</span>
           ${managing ? '<span class="editlabel">修改</span>' : icon('plus')}
         </button>`).join('')}
-        ${e && e.mode === 'new' ? foodEditor(e) : `<button class="row action" data-act="newFood">${icon('plus')}${db.foods.length ? '新增食物' : '新增第一個常吃的食物'}</button>`}
+        ${e && e.mode === 'new' ? foodEditor(e) : `<button class="row action" data-act="newFood">${icon('plus')}${db.foods.length ? '新增常吃的食物' : '新增第一個常吃的食物'}</button>`}
       </section>
       <p class="foot">${db.foods.length
         ? (managing ? '點食物修改名稱和數字。' : '點食物會先讓你確認份量和數字，再加入。')
         : '把常買的便當、飲料、乳清加進來，熱量和蛋白質照營養標示或店家公布的數字填，之後點一下就能記。'}</p>
+
+      <div class="group-h"><span>其他食物</span></div>
+      <section class="group">
+        ${e && e.mode === 'once' ? foodEditor(e) : `<button class="row action" data-act="onceFood">${icon('plus')}記一筆其他食物</button>`}
+      </section>
+      <p class="foot">偶爾吃的、聚餐、別人請的，直接填估計的熱量和蛋白質，不會存進常吃的清單。</p>
 
       ${meals.length ? `<div class="group-h"><span>${d === todayStr() ? '今天' : fmtDay(d)}吃了 · ${meals.length} 筆</span><button class="linkbtn" data-act="toggleEdit" data-k="diet">${editing ? '完成' : '編輯'}</button></div>
         <section class="group">${meals.map(m => `<div class="row entry">
@@ -840,6 +846,12 @@ const actions = {
     render();
     $('[data-field="e.name"]')?.focus();
   },
+  onceFood: () => {
+    state.editing.foods = false;
+    state.dietEdit = { mode: 'once', id: null, name: '', kcal: '', protein: '', qty: 1, fav: false };
+    render();
+    $('[data-field="e.kcal"]')?.focus();
+  },
   cancelEdit: () => { state.dietEdit = null; render(); },
   eQty: (_, d) => { state.dietEdit.qty = Math.max(0.5, state.dietEdit.qty + d); render(); },
   eFav: () => { state.dietEdit.fav = !state.dietEdit.fav; render(); },
@@ -851,7 +863,7 @@ const actions = {
     const meal = { id: uid(), ts: Date.now(), date: state.dietDate, name, qty: e.qty, kcal: kcal * e.qty, protein: protein * e.qty };
     db.meals.push(meal);
     let msg = `已加入 ${name || '一筆飲食'}${e.qty !== 1 ? ` ×${fmtNum(e.qty)}` : ''}`;
-    if (e.mode === 'new' && e.fav && name) {
+    if ((e.mode === 'new' || (e.mode === 'once' && e.fav)) && name) {
       const have = db.foods.find(f => f.name === name);
       if (have) Object.assign(have, { kcal, protein });
       else db.foods.push({ id: uid(), name, kcal, protein });
