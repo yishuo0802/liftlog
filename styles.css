@@ -143,6 +143,32 @@ h1 { font-size: 34px; line-height: 41px; font-weight: 700; margin: 0; }
 .row.food .name { font-weight: 500; }
 .row.food svg.i { color: var(--tint); width: 20px; height: 20px; stroke-width: 2.2; }
 
+.row.food .editlabel { color: var(--tint); font-size: 15px; flex: none; }
+
+/* 飲食確認卡：嵌在清單裡展開 */
+.editor {
+  position: relative;
+  background: color-mix(in srgb, var(--tint) 7%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tint) 55%, transparent);
+  border-radius: 12px;
+  margin: 6px;
+}
+.row + .editor, .editor + .row { margin-top: 6px; }
+.editor .row + .row::before { left: 16px; }
+.editor-head { padding-top: 12px; }
+.editor-head .name { font-weight: 600; font-size: 17px; }
+.editor-head .sub { font-size: 13px; color: var(--label2); text-align: right; }
+.editor .row.total { justify-content: flex-end; font-variant-numeric: tabular-nums; font-weight: 600; min-height: 40px; }
+.btn-row { display: flex; gap: 8px; padding: 6px 12px 12px; }
+.btn {
+  flex: 1; min-height: 44px; border: 0; border-radius: 10px;
+  background: var(--fill); color: var(--label); font-size: 16px; font-weight: 500;
+}
+.btn:active { filter: brightness(0.92); }
+.btn[data-act="delFood"] { color: var(--danger); flex: 0.8; }
+.btn.primary-sm { flex: 1.6; background: var(--tint); color: var(--on-tint); font-weight: 600; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+
 .chips-row { align-items: flex-start; padding-top: 10px; padding-bottom: 10px; }
 .chips-row .k { padding-top: 6px; }
 .chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

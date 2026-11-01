@@ -69,17 +69,17 @@ const ICON = {
 };
 const icon = (name, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
-// 常吃食物的起始清單（數字是概略值，使用者可以刪改）
-const DEFAULT_FOODS = [
+// 上一版預設塞的通用食物；使用者沒改過的會在遷移時移除
+const OLD_DEFAULT_FOODS = [
   ['雞胸肉（100g）', 165, 31], ['乳清蛋白（1 匙）', 120, 24], ['雞蛋（1 顆）', 75, 7],
   ['無糖豆漿（400ml）', 140, 14], ['希臘優格（100g）', 100, 10], ['白飯（1 碗）', 280, 5],
 ];
-const defaultFoods = () => DEFAULT_FOODS.map(([name, kcal, protein]) => ({ id: uid(), name, kcal, protein }));
+const isOldDefault = f => OLD_DEFAULT_FOODS.some(([n, k, p]) => f.name === n && f.kcal === k && f.protein === p);
 const DEFAULT_GOALS = { proteinPerKg: 2, kcal: null };
 
 // ---------- storage ----------
 function freshDb() {
-  return { defaultsVersion: DEFAULTS_VERSION, exercises: defaultExercises(), workouts: [], body: [], foods: defaultFoods(), meals: [], goals: { ...DEFAULT_GOALS } };
+  return { defaultsVersion: DEFAULTS_VERSION, foodsVersion: 2, exercises: defaultExercises(), workouts: [], body: [], foods: [], meals: [], goals: { ...DEFAULT_GOALS } };
 }
 function normalize(d) {
   if (!d || typeof d !== 'object') throw new Error('格式不對');
@@ -93,8 +93,8 @@ function normalize(d) {
     }) : [],
     workouts: Array.isArray(d.workouts) ? d.workouts.filter(w => w && w.date && w.exercise) : [],
     body: Array.isArray(d.body) ? d.body.filter(b => b && b.date) : [],
-    // 舊資料沒有飲食欄位：給起始的常吃清單
-    foods: Array.isArray(d.foods) ? d.foods.filter(f => f && f.name) : defaultFoods(),
+    foodsVersion: +d.foodsVersion || 1,
+    foods: Array.isArray(d.foods) ? d.foods.filter(f => f && f.name) : [],
     meals: Array.isArray(d.meals) ? d.meals.filter(m => m && m.date) : [],
     goals: { ...DEFAULT_GOALS, ...(d.goals && typeof d.goals === 'object' ? d.goals : {}) },
   };
@@ -102,6 +102,10 @@ function normalize(d) {
   out.body.forEach(b => { b.id ||= uid(); b.ts ||= 0; b.note ||= ''; });
   out.foods.forEach(f => { f.id ||= uid(); f.name = String(f.name); f.kcal = +f.kcal || 0; f.protein = +f.protein || 0; });
   out.meals.forEach(m => { m.id ||= uid(); m.ts ||= 0; m.name = String(m.name || ''); m.kcal = +m.kcal || 0; m.protein = +m.protein || 0; m.qty = +m.qty || 1; });
+  if (out.foodsVersion < 2) {
+    out.foods = out.foods.filter(f => !isOldDefault(f));
+    out.foodsVersion = 2;
+  }
   return migrate(out);
 }
 // 舊版只有 8 個動作：補上新的動作庫，舊動作和紀錄都保留
@@ -141,9 +145,8 @@ const state = {
   tab: 'log',
   editing: { history: false, body: false, exercises: false, diet: false, foods: false },
   dietDate: todayStr(),
-  dietQty: 1,
-  dietForm: { name: '', kcal: '', protein: '', fav: false },
-  newFood: { name: '', kcal: '', protein: '' },
+  // 飲食確認卡：mode 'use' 用常吃的食物、'new' 新增、'edit' 改常吃的食物
+  dietEdit: null,
   chartMode: 'train',
   chartExercise: null,
   aiWeeks: 12, // 0 = 全部
@@ -163,7 +166,6 @@ const exercisesIn = cat => {
 const allCategories = () => sortCategories([...new Set([...CATEGORIES.filter(c => db.exercises.some(e => e.categories.includes(c))), ...db.exercises.flatMap(e => e.categories)])]);
 
 // ---------- 飲食 ----------
-const QTYS = [0.5, 1, 1.5, 2];
 function dayTotals(date) {
   return db.meals.filter(m => m.date === date)
     .reduce((t, m) => ({ kcal: t.kcal + m.kcal, protein: t.protein + m.protein }), { kcal: 0, protein: 0 });
@@ -247,6 +249,49 @@ function workoutRow(w, deletable) {
     ${deletable ? `<button class="del" data-act="delWorkout" data-id="${w.id}">刪除</button>` : ''}
   </div>`;
 }
+// 飲食確認卡：嵌在常吃的食物清單裡，加入前先確認份量和數字
+function editorTotals(e) {
+  const k = parseNum(e.kcal), p = parseNum(e.protein);
+  if (k === null && p === null) return '填熱量或蛋白質';
+  return `合計 ${fmtNum((k ?? 0) * e.qty)} kcal · ${fmtNum((p ?? 0) * e.qty)} g`;
+}
+function editorValid(e) {
+  const hasNum = parseNum(e.kcal) !== null || parseNum(e.protein) !== null;
+  if (e.mode === 'use') return hasNum;
+  if (e.mode === 'edit') return hasNum && e.name.trim();
+  return hasNum && (!e.fav || e.name.trim());
+}
+function foodEditor(e) {
+  const dayLabel = state.dietDate === todayStr() ? '今天' : fmtShort(state.dietDate);
+  const numRow = (key, label, unit) => `<div class="row"><label class="k" for="e-${key}">${label}</label>
+    <span class="ctl"><input id="e-${key}" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="e.${key}" value="${esc(e[key])}"><span class="unit">${unit}</span></span></div>`;
+  const nameRow = e.mode === 'use'
+    ? `<div class="row editor-head"><span class="name">${esc(e.name)}</span><span class="sub">每份數字，這次可以改</span></div>`
+    : `<div class="row editor-head"><input class="full" data-field="e.name" placeholder="名稱，例如：XX 便當 雞腿飯" value="${esc(e.name)}" aria-label="食物名稱"${e.mode === 'new' ? ' autofocus' : ''}></div>`;
+  const qtyRow = e.mode === 'edit' ? '' : `<div class="row"><span class="k">份量</span>
+    <span class="ctl"><span class="val">×${fmtNum(e.qty)}</span>
+      <span class="stepper">
+        <button data-act="eQty" data-d="-0.5" aria-label="份量減少">${icon('minus')}</button>
+        <button data-act="eQty" data-d="0.5" aria-label="份量增加">${icon('plus')}</button>
+      </span></span></div>`;
+  const favRow = e.mode === 'new' ? `<div class="row"><span class="k">存成常吃的食物</span>
+    <button class="chip" aria-pressed="${e.fav}" data-act="eFav">${e.fav ? '會存' : '不存'}</button></div>` : '';
+  const buttons = e.mode === 'edit'
+    ? `<button class="btn" data-act="delFood" data-id="${e.id}">刪除</button>
+       <button class="btn" data-act="cancelEdit">取消</button>
+       <button class="btn primary-sm" data-act="saveFood"${editorValid(e) ? '' : ' disabled'}>儲存</button>`
+    : `<button class="btn" data-act="cancelEdit">取消</button>
+       <button class="btn primary-sm" data-act="confirmMeal"${editorValid(e) ? '' : ' disabled'}>加入${dayLabel}</button>`;
+  return `<div class="editor" role="group" aria-label="確認食物">
+    ${nameRow}
+    ${numRow('kcal', '每份熱量', 'kcal')}
+    ${numRow('protein', '每份蛋白質', 'g')}
+    ${qtyRow}
+    ${favRow}
+    ${e.mode === 'edit' ? '' : `<div class="row total"><span id="e-total">${editorTotals(e)}</span></div>`}
+    <div class="btn-row">${buttons}</div>
+  </div>`;
+}
 function empty(iconName, title, text) {
   return `<div class="empty">${icon(iconName)}<h2>${esc(title)}</h2><p>${text}</p></div>`;
 }
@@ -300,9 +345,9 @@ const views = {
     const meals = db.meals.filter(m => m.date === d).sort((a, b) => b.ts - a.ts);
     const t = dayTotals(d);
     const g = goals();
-    const f = state.dietForm;
+    const e = state.dietEdit;
     const editing = state.editing.diet;
-    const canAdd = parseNum(f.kcal) !== null || parseNum(f.protein) !== null;
+    const managing = state.editing.foods;
     const meter = (label, value, goal, unit, hint) => {
       const pct = goal ? Math.min(100, (value / goal) * 100) : 0;
       const left = goal ? goal - value : null;
@@ -323,30 +368,18 @@ const views = {
         ${meter('熱量', t.kcal, g.kcal, 'kcal', '到「設定」填每日熱量目標')}
       </section>
 
-      <div class="group-h"><span>常吃的食物 · 點一下加入</span></div>
+      <div class="group-h"><span>常吃的食物</span>${db.foods.length ? `<button class="linkbtn" data-act="toggleEdit" data-k="foods">${managing ? '完成' : '編輯'}</button>` : ''}</div>
       <section class="group">
-        <div class="row"><span class="k">份量</span>
-          <span class="seg mini" role="tablist" aria-label="份量">${QTYS.map(q =>
-            `<button role="tab" aria-selected="${state.dietQty === q}" data-act="dietQty" data-d="${q}">×${q}</button>`).join('')}</span>
-        </div>
-        ${db.foods.length ? db.foods.map(food => `<button class="row entry food" data-act="addFood" data-id="${food.id}">
+        ${db.foods.map(food => e && e.id === food.id ? foodEditor(e) : `<button class="row entry food" data-act="openFood" data-id="${food.id}">
           <span class="main name">${esc(food.name)}</span>
-          <span class="meta">${fmtNum(food.kcal * state.dietQty)} kcal · ${fmtNum(food.protein * state.dietQty)} g</span>
-          ${icon('plus')}
-        </button>`).join('') : '<div class="row"><span class="sub">還沒有常吃的食物，用下面的手動輸入加一個，並勾選「存成常吃的食物」。</span></div>'}
+          <span class="meta">${fmtNum(food.kcal)} kcal · ${fmtNum(food.protein)} g</span>
+          ${managing ? '<span class="editlabel">修改</span>' : icon('plus')}
+        </button>`).join('')}
+        ${e && e.mode === 'new' ? foodEditor(e) : `<button class="row action" data-act="newFood">${icon('plus')}${db.foods.length ? '新增食物' : '新增第一個常吃的食物'}</button>`}
       </section>
-
-      <div class="group-h"><span>手動輸入</span></div>
-      <section class="group">
-        <div class="row"><input class="full" data-field="d.name" placeholder="名稱，例如：雞腿便當" value="${esc(f.name)}" aria-label="食物名稱"></div>
-        <div class="row"><label class="k" for="d-kcal">熱量</label>
-          <span class="ctl"><input id="d-kcal" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="d.kcal" value="${esc(f.kcal)}"><span class="unit">kcal</span></span></div>
-        <div class="row"><label class="k" for="d-protein">蛋白質</label>
-          <span class="ctl"><input id="d-protein" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="d.protein" value="${esc(f.protein)}"><span class="unit">g</span></span></div>
-        <div class="row"><span class="k">存成常吃的食物</span>
-          <button class="chip" aria-pressed="${f.fav}" data-act="toggleFav">${f.fav ? '會存' : '不存'}</button></div>
-      </section>
-      <button class="primary" data-act="addMeal"${canAdd ? '' : ' disabled'}>加入${d === todayStr() ? '今天' : fmtShort(d)}的飲食</button>
+      <p class="foot">${db.foods.length
+        ? (managing ? '點食物修改名稱和數字。' : '點食物會先讓你確認份量和數字，再加入。')
+        : '把常買的便當、飲料、乳清加進來，熱量和蛋白質照營養標示或店家公布的數字填，之後點一下就能記。'}</p>
 
       ${meals.length ? `<div class="group-h"><span>${d === todayStr() ? '今天' : fmtDay(d)}吃了 · ${meals.length} 筆</span><button class="linkbtn" data-act="toggleEdit" data-k="diet">${editing ? '完成' : '編輯'}</button></div>
         <section class="group">${meals.map(m => `<div class="row entry">
@@ -451,8 +484,6 @@ const views = {
     for (const e of db.exercises) (groups[e.categories[0]] ||= []).push(e);
     const w = latestWeight();
     const g = goals();
-    const nf = state.newFood;
-    const foodOk = nf.name.trim() && (parseNum(nf.kcal) !== null || parseNum(nf.protein) !== null);
     return `${title('設定')}
       <div class="group-h"><span>飲食目標</span></div>
       <section class="group">
@@ -463,20 +494,6 @@ const views = {
       </section>
       <p class="foot" id="goal-foot">${w ? `以最新體重 ${fmtNum(w)} kg 計算，每天蛋白質目標 ${g.protein ?? '—'} g。` : '到「身體」填體重後，會自動算出蛋白質目標。'}增肌常見 1.6–2.2 g/kg。</p>
 
-      <div class="group-h"><span>常吃的食物 · ${db.foods.length}</span><button class="linkbtn" data-act="toggleEdit" data-k="foods">${state.editing.foods ? '完成' : '編輯'}</button></div>
-      <section class="group">
-        ${db.foods.map(f => `<div class="row entry">
-          <div class="main">${esc(f.name)}</div><div class="meta">${fmtNum(f.kcal)} kcal · ${fmtNum(f.protein)} g</div>
-          ${state.editing.foods ? `<button class="del" data-act="delFood" data-id="${f.id}">刪除</button>` : ''}
-        </div>`).join('')}
-        <div class="row"><input class="full" data-field="f.name" placeholder="新增：名稱和份量，例如：茶葉蛋（1 顆）" value="${esc(nf.name)}" aria-label="食物名稱"></div>
-        <div class="row"><label class="k" for="f-kcal">熱量</label>
-          <span class="ctl"><input id="f-kcal" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="f.kcal" value="${esc(nf.kcal)}"><span class="unit">kcal</span></span></div>
-        <div class="row"><label class="k" for="f-protein">蛋白質</label>
-          <span class="ctl"><input id="f-protein" class="num" inputmode="decimal" autocomplete="off" placeholder="—" data-field="f.protein" value="${esc(nf.protein)}"><span class="unit">g</span></span></div>
-        <button class="row action" data-act="addFoodItem"${foodOk ? '' : ' disabled'}>${icon('plus')}新增常吃的食物</button>
-      </section>
-      <p class="foot">起始清單的數字是概略值，依你吃的品牌和份量修改會更準。營養標示上的「每份」數字可以直接填。</p>
 
       <div class="group-h"><span>新增動作</span></div>
       <section class="group">
@@ -739,9 +756,9 @@ function removeWith(list, id, label) {
 }
 
 const actions = {
-  tab: k => { state.tab = k; window.scrollTo(0, 0); render(); },
+  tab: k => { state.tab = k; state.dietEdit = null; window.scrollTo(0, 0); render(); },
   undo: () => { if (undoFn) { undoFn(); undoFn = null; $('#toast').classList.remove('show'); } },
-  toggleEdit: k => { state.editing[k] = !state.editing[k]; render(); },
+  toggleEdit: k => { state.editing[k] = !state.editing[k]; if (k === 'foods') state.dietEdit = null; render(); },
   chartMode: k => { state.chartMode = k; render(); },
   aiRange: (_, w) => { state.aiWeeks = w; render(); },
   copyPrompt: async () => {
@@ -811,42 +828,52 @@ const actions = {
     toCsv(['date', 'food', 'qty', 'kcal', 'protein_g'],
       [...db.meals].sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts).map(m => [m.date, m.name, m.qty, m.kcal, m.protein])),
     'text/csv'),
-  dietQty: (_, q) => { state.dietQty = q; render(); },
-  addFood: (_, __, el) => {
+  openFood: (_, __, el) => {
     const food = db.foods.find(f => f.id === el.dataset.id);
     if (!food) return;
-    const q = state.dietQty;
-    const meal = { id: uid(), ts: Date.now(), date: state.dietDate, name: food.name, qty: q, kcal: food.kcal * q, protein: food.protein * q };
-    db.meals.push(meal);
-    if (!persist()) return;
+    state.dietEdit = { mode: state.editing.foods ? 'edit' : 'use', id: food.id, name: food.name, kcal: String(food.kcal), protein: String(food.protein), qty: 1, fav: false };
     render();
-    toast(`已加入 ${food.name}${q !== 1 ? ` ×${q}` : ''}`, () => { db.meals = db.meals.filter(m => m.id !== meal.id); persist(); render(); });
   },
-  toggleFav: () => { state.dietForm.fav = !state.dietForm.fav; render(); },
-  addMeal: () => {
-    const f = state.dietForm;
-    const kcal = parseNum(f.kcal) ?? 0, protein = parseNum(f.protein) ?? 0;
-    const name = f.name.trim();
-    db.meals.push({ id: uid(), ts: Date.now(), date: state.dietDate, name, qty: 1, kcal, protein });
-    const savedFav = f.fav && name && !db.foods.some(x => x.name === name);
-    if (savedFav) db.foods.push({ id: uid(), name, kcal, protein });
-    if (!persist()) return;
-    state.dietForm = { name: '', kcal: '', protein: '', fav: false };
+  newFood: () => {
+    state.editing.foods = false;
+    state.dietEdit = { mode: 'new', id: null, name: '', kcal: '', protein: '', qty: 1, fav: true };
     render();
-    toast(savedFav ? `已加入，也存成常吃的食物` : '已加入');
+    $('[data-field="e.name"]')?.focus();
+  },
+  cancelEdit: () => { state.dietEdit = null; render(); },
+  eQty: (_, d) => { state.dietEdit.qty = Math.max(0.5, state.dietEdit.qty + d); render(); },
+  eFav: () => { state.dietEdit.fav = !state.dietEdit.fav; render(); },
+  confirmMeal: () => {
+    const e = state.dietEdit;
+    if (!e || !editorValid(e)) return;
+    const kcal = parseNum(e.kcal) ?? 0, protein = parseNum(e.protein) ?? 0;
+    const name = e.name.trim();
+    const meal = { id: uid(), ts: Date.now(), date: state.dietDate, name, qty: e.qty, kcal: kcal * e.qty, protein: protein * e.qty };
+    db.meals.push(meal);
+    let msg = `已加入 ${name || '一筆飲食'}${e.qty !== 1 ? ` ×${fmtNum(e.qty)}` : ''}`;
+    if (e.mode === 'new' && e.fav && name) {
+      const have = db.foods.find(f => f.name === name);
+      if (have) Object.assign(have, { kcal, protein });
+      else db.foods.push({ id: uid(), name, kcal, protein });
+      msg += '，也存成常吃的食物';
+    }
+    if (!persist()) return;
+    state.dietEdit = null;
+    render();
+    toast(msg, () => { db.meals = db.meals.filter(m => m.id !== meal.id); persist(); render(); });
+  },
+  saveFood: () => {
+    const e = state.dietEdit;
+    const food = e && db.foods.find(f => f.id === e.id);
+    if (!food || !editorValid(e)) return;
+    Object.assign(food, { name: e.name.trim(), kcal: parseNum(e.kcal) ?? 0, protein: parseNum(e.protein) ?? 0 });
+    persist();
+    state.dietEdit = null;
+    render();
+    toast(`已更新「${food.name}」`);
   },
   delMeal: (_, __, el) => removeWith('meals', el.dataset.id, '一筆飲食'),
-  delFood: (_, __, el) => removeWith('foods', el.dataset.id, '常吃的食物'),
-  addFoodItem: () => {
-    const nf = state.newFood;
-    const name = nf.name.trim();
-    if (!name) return;
-    db.foods.push({ id: uid(), name, kcal: parseNum(nf.kcal) ?? 0, protein: parseNum(nf.protein) ?? 0 });
-    persist();
-    state.newFood = { name: '', kcal: '', protein: '' };
-    render();
-    toast(`已新增「${name}」`);
-  },
+  delFood: (_, __, el) => { state.dietEdit = null; removeWith('foods', el.dataset.id, '常吃的食物'); },
   backup: () => shareFile(`liftlog-backup-${todayStr()}.json`, JSON.stringify({ app: 'liftlog', version: 1, ...db }, null, 1), 'application/json'),
   restore: () => $('#importFile').click(),
 };
@@ -862,8 +889,7 @@ function setField(field, value) {
   if (field.startsWith('b.')) state.bodyForm[field.slice(2)] = value;
   else if (field.startsWith('n.')) state.newEx[field.slice(2)] = value;
   else if (field === 'd.date') state.dietDate = value || todayStr();
-  else if (field.startsWith('d.')) state.dietForm[field.slice(2)] = value;
-  else if (field.startsWith('f.')) state.newFood[field.slice(2)] = value;
+  else if (field.startsWith('e.')) { if (state.dietEdit) state.dietEdit[field.slice(2)] = value; }
   else if (field.startsWith('g.')) { db.goals[field.slice(2)] = value.trim() === '' ? null : parseNum(value); persist(); }
   else if (field === 'chartExercise') state.chartExercise = value;
   else state.form[field] = value;
@@ -880,13 +906,12 @@ document.addEventListener('input', ev => {
     const btn = $('[data-act="addExercise"]');
     const name = state.newEx.name.trim();
     if (btn) btn.disabled = !name || !state.newEx.categories.length || db.exercises.some(e => e.name === name);
-  } else if (field.startsWith('d.') && field !== 'd.date') {
-    const btn = $('[data-act="addMeal"]');
-    if (btn) btn.disabled = parseNum(state.dietForm.kcal) === null && parseNum(state.dietForm.protein) === null;
-  } else if (field.startsWith('f.')) {
-    const btn = $('[data-act="addFoodItem"]');
-    const nf = state.newFood;
-    if (btn) btn.disabled = !nf.name.trim() || (parseNum(nf.kcal) === null && parseNum(nf.protein) === null);
+  } else if (field.startsWith('e.') && state.dietEdit) {
+    const e = state.dietEdit;
+    const total = $('#e-total');
+    if (total) total.textContent = editorTotals(e);
+    const btn = $('[data-act="confirmMeal"], [data-act="saveFood"]');
+    if (btn) btn.disabled = !editorValid(e);
   } else if (field.startsWith('g.')) {
     const foot = $('#goal-foot');
     const w = latestWeight(), g = goals();
